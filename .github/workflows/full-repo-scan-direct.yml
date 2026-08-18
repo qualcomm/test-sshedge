@@ -1,0 +1,25 @@
+name: Full-Repo Scan (direct action, report-only)
+
+# Invokes the full-scan composite action DIRECTLY (not via the preflight
+# orchestrator), pinned to the reviewed ref, in report-only mode so the run
+# stays green and the whole per-file matrix is visible in one report.
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  full-scan-direct:
+    name: Full-repo scan via composite action (report-only)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run full-repo copyright/license scan
+        uses: qualcomm/copyright-license-checker-action/full-scan@full_scan
+        with:
+          repo_name: ${{ github.repository }}
+          fail_on_findings: 'false'
