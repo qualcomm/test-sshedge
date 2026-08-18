@@ -62,6 +62,23 @@ Locally, the identical run:
 | `or_then_and_block.py` | (MIT OR Apache-2.0) AND GPL-2.0-only | Qualcomm | BLOCK | full-scan evaluates **every** AND group — the trailing GPL fails even though the leading OR is permissive |
 | `and_group_in_or.py` | (MIT AND BSD-3-Clause) OR GPL-2.0-only | Qualcomm | BLOCK (**should be clean**) | **known false positive**: the OR's left branch is fully permissive, but the string-split evaluator mis-parses a parenthesized `(A AND B) OR C` |
 
+## Expected outcomes — non-SPDX license markings
+
+These carry a real license **notice text** (or none) instead of an
+`SPDX-License-Identifier:` tag, so they exercise scancode's text-matching path
+(`2-aho`/`3-seq`) and the `confident_license_expression` length filter rather than the
+`1-spdx-id` matcher.
+
+| File | Marking in file | Copyright | full_scan | Case it covers |
+|------|-----------------|-----------|-----------|----------------|
+| `bsd3_notice.c` | BSD-3-Clause full "Redistribution and use…" notice | Qualcomm | clean | permissive license recognized from notice text, no SPDX tag |
+| `mit_notice.py` | MIT "Permission is hereby granted…" notice | Qualcomm | clean | permissive MIT from text |
+| `apache_notice.py` | Apache-2.0 "Licensed under the Apache License, Version 2.0…" notice | Qualcomm | clean | permissive Apache-2.0 from text |
+| `gpl_notice.c` | GPL "This program is free software…" notice | Someone Else | BLOCK + WARN | copyleft detected from text (`GPL-2.0-or-later`, INCOMPAT) + non-Qualcomm holder (CRHOLDER) |
+| `proprietary_notice.py` | "All rights reserved. Confidential and proprietary." | Qualcomm | BLOCK | proprietary detected from a 3-token notice (kept at `MIN_CONFIDENT_MATCH_LENGTH`) → lone proprietary blocks |
+| `license_ref.c` | "Licensed under the terms described in the LICENSE file…" | Qualcomm | WARN | a referenced-license phrase → `LicenseRef-scancode-unknown-license-reference` (UNCERT) |
+| `copyright_only.py` | (none — copyright line only) | Qualcomm | BLOCK | copyright present but no license notice → No license header found (NOLIC); complements `mit_nocopyright.py` (the inverse) |
+
 Legend: **BLOCK** = blocking error (fails the gate); **WARN** = non-blocking warning;
 **clean** = no finding; **not scanned** = filtered out before scanning (excluded/uncovered
 extension or `.licenseignore`).
