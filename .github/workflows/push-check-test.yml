@@ -25,3 +25,7 @@ jobs:
       enable-full-repo-scan: false
     permissions:
       contents: read
+      # security-events: write is required at startup because the orchestrator's
+      # semgrep job declares it; GitHub validates every called job's permissions
+      # up front, before the enable-* if: conditions are evaluated.
+      security-events: write
