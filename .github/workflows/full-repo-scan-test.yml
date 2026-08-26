@@ -1,22 +1,25 @@
-name: Full-Repo Scan Test - sshedge
+name: QC Preflight Checks
 
 on:
+  pull_request:
   push:
+    branches: [license-prose]
   workflow_dispatch:
 
 jobs:
-  full-scan:
-    name: Run Full-Repo Copyright and License Scan
+  preflight:
+    name: Run QC Preflight Checks
     uses: qualcomm/qcom-reusable-workflows/.github/workflows/reusable-qcom-preflight-checks-orchestrator.yml@test_copyright_license_action
     with:
-      enable-semgrep-scan: false
+      enable-semgrep-scan: true
       enable-dependency-review: false
-      enable-repolinter-check: false
-      enable-copyright-license-check: false
+      enable-repolinter-check: true
+      enable-copyright-license-check: true
       enable-commit-email-check: false
       enable-commit-msg-check: false
       enable-armor-checkers: false
       enable-full-repo-scan: true
+      # full-repo-scan-fail-on-findings defaults to 'true' (enforcing) in the orchestrator.
     permissions:
       contents: read
       security-events: write
