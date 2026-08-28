@@ -1,6 +1,3 @@
-# SPDX-License-Identifier: BSD-3-Clause
-# Copyright (c) 2024 Qualcomm Technologies, Inc. and/or its subsidiaries.
-
 
 def add(a, b):
     return a + b
