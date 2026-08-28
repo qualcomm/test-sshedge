@@ -1,0 +1,20 @@
+name: Repo Policy Action (report-all full scan)
+
+on:
+  push:
+    branches: [test/repo-policy-action-report-all]
+  workflow_dispatch:
+
+jobs:
+  policy:
+    name: Full scan (report all offenders)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run repo-policy-action (full scan, report all)
+        uses: sshedge71/repo-policy-action@pr-24
+        with:
+          fail-on-error: 'false'
+          fail-on-warning: 'false'
