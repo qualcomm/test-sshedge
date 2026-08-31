@@ -1,4 +1,4 @@
-name: QC Preflight Checks: full_scan_private_internal_repos
+name: QC Preflight Checks FullScanPrivateInternalRepos
 
 on:
   pull_request:
