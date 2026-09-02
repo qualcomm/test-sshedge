@@ -2,16 +2,22 @@
 
 Deliberate test cases for the copyright-license-checker Action's **full-repo scan**
 (`full_scan.py`). Each file encodes one scenario; the tables below are the expected
-`full_scan` outcome. The repo license resolves to **BSD-3-Clause-Clear** (the `LICENSE`
-file is effectively empty, so resolution falls through to the default), so the allowed
-set is the permissive licenses.
+`full_scan` outcome. The repo license resolves to **BSD-3-Clause-Clear** from the
+root `LICENSE` file, so the allowed set is the permissive licenses.
+
+This branch is the licensed variant of `full-matrix-fixtures`: identical fixtures, but with
+a real `LICENSE` so a repository baseline can be established and the per-file matrix below
+is actually exercised. `full-matrix-fixtures` itself has an empty `LICENSE`, so the scan
+correctly stops there with "No Root-Level Licence Found" and analyzes no files — an empty
+license declares no license, and the scan never assumes a default. `license-empty` is the
+dedicated fixture for that stop.
 
 ## How it runs (GitHub Action)
 
 Two workflows exercise the same scanner from different entry points:
 
 - **`.github/workflows/full-repo-scan-direct.yml`** — calls the composite action directly
-  (`qualcomm/copyright-license-checker-action/full-scan@full_scan`) with
+  (`qualcomm/copyright-license-checker-action/full-scan@full_files_scan`) with
   `fail_on_findings: false`. Report-only: the job stays green and the full per-file matrix
   shows in one report. This is the workflow to read.
 - **`.github/workflows/full-repo-scan-test.yml`** — runs the scan through the shared
@@ -60,7 +66,7 @@ Locally, the identical run:
 | `data.json` | GPL-2.0-only (as a string) | — | not scanned | `.json` is an excluded extension |
 | `config.yml` | GPL-2.0-only | — | not scanned | `.yml` is an excluded extension |
 | `or_then_and_block.py` | (MIT OR Apache-2.0) AND GPL-2.0-only | Qualcomm | BLOCK | full-scan evaluates **every** AND group — the trailing GPL fails even though the leading OR is permissive |
-| `and_group_in_or.py` | (MIT AND BSD-3-Clause) OR GPL-2.0-only | Qualcomm | BLOCK (**should be clean**) | **known false positive**: the OR's left branch is fully permissive, but the string-split evaluator mis-parses a parenthesized `(A AND B) OR C` |
+| `and_group_in_or.py` | (MIT AND BSD-3-Clause) OR GPL-2.0-only | Qualcomm | clean | the OR's left branch is fully permissive, so the parenthesized AND group satisfies the whole expression |
 
 ## Expected outcomes — non-SPDX license markings
 
@@ -87,7 +93,9 @@ extension or `.licenseignore`).
 
 - License *change* / *deletion* and the Qualcomm-copyright-rename allowance are pull-request
   *diff* behaviors (`main.py`), not full-repo-scan behaviors, so they are not represented here.
-- `and_group_in_or.py` is the one intentional **false positive** in this set: the scanner's
-  hand-rolled SPDX evaluator splits on ` AND ` before honoring the outer parentheses, so a
-  fully-permissive `(A AND B)` branch inside a top-level `OR` is wrongly rejected. It is kept
-  as a regression marker for the parser fix (evaluate via a real SPDX expression parser).
+- `and_group_in_or.py` used to be an intentional **false positive** in this set: the scanner's
+  hand-rolled SPDX evaluator split on ` AND ` before honoring the outer parentheses, so a
+  fully-permissive `(A AND B)` branch inside a top-level `OR` was wrongly rejected. That is
+  fixed — expressions are now evaluated with the real SPDX parser (`license_expression`), so the
+  file is clean. It stays in the set as the regression marker for that fix, paired with
+  `or_then_and_block.py`, which must keep blocking to prove the parser did not over-correct.
