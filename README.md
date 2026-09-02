@@ -21,9 +21,10 @@ Two workflows exercise the same scanner from different entry points:
   `fail_on_findings: false`. Report-only: the job stays green and the full per-file matrix
   shows in one report. This is the workflow to read.
 - **`.github/workflows/full-repo-scan-test.yml`** — runs the scan through the shared
-  `reusable-qcom-preflight-checks-orchestrator.yml` (`enable-full-repo-scan: true`). That
-  path runs as a **gate**, so it exits non-zero (job fails) whenever a blocking fixture is
-  present — expected here.
+  `reusable-qcom-preflight-checks-orchestrator.yml` (`enable-copyright-license-check: true`;
+  the scan is folded into that check and routes by event — push gets the full-repo scan,
+  pull_request gets the diff scan). That path runs as a **gate**, so it exits non-zero
+  (job fails) whenever a blocking fixture is present — expected here.
 
 Locally, the identical run:
 

@@ -1,5 +1,14 @@
 name: Full-Repo Scan Test - sshedge
 
+# Runs the scan through the shared orchestrator (the gate path), as opposed to
+# full-repo-scan-direct.yml which calls the composite action itself.
+#
+# There is no enable-full-repo-scan input any more: the full-repo scan was folded
+# into reusable-copyright-license-check.yml, which routes by event -- push runs the
+# full-repo scan, pull_request runs the diff scan. So enable-copyright-license-check
+# is what turns it on. Passing the old input made the run fail at startup with an
+# unrecognized-input error before any job started.
+
 on:
   push:
   workflow_dispatch:
@@ -12,11 +21,10 @@ jobs:
       enable-semgrep-scan: false
       enable-dependency-review: false
       enable-repolinter-check: false
-      enable-copyright-license-check: false
+      enable-copyright-license-check: true
       enable-commit-email-check: false
       enable-commit-msg-check: false
       enable-armor-checkers: false
-      enable-full-repo-scan: true
     permissions:
       contents: read
       security-events: write
