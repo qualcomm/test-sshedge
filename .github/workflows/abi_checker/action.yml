@@ -1,0 +1,479 @@
+
+  name: "Run ABI checks"
+  description: "Run ABI checks"
+  branding:
+    icon: "align-left"
+    color: "blue"
+
+  inputs:
+    event-name:
+      description: "github.event_name from the caller"
+      required: true
+    head-sha:
+      description: "Head SHA for the event"
+      required: true
+    base-sha:
+      description: "Base SHA for the event"
+      required: false
+      default: ""
+    ref:
+      description: "Ref associated with the event"
+      required: false
+      default: ""
+    repo:
+      description: "owner/repo of the caller"
+      required: false
+      default: ""
+    branch-name:
+      description: "Branch name for the event"
+      required: true
+    build-script:
+      description: "Build script to build the project"
+      required: true
+
+  runs:
+    using: "composite"
+    steps:
+      - name: Checkout base commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base-sha }}
+          path: base
+          fetch-depth: 0
+
+      - name: Checkout head commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head-sha }}
+          path: head
+          fetch-depth: 0
+
+      - name: Echo paths and SHAs
+        shell: bash
+        env:
+          EVENT_NAME: ${{ inputs.event-name }}
+          BASE_SHA:   ${{ inputs.base-sha }}
+          HEAD_SHA:   ${{ inputs.head-sha }}
+        run: |
+          echo "Event        : $EVENT_NAME"
+          echo "Base SHA     : $BASE_SHA"
+          echo "Head SHA     : $HEAD_SHA"
+          echo "github-base path  : $GITHUB_WORKSPACE/base"
+          echo "github-head path  : $GITHUB_WORKSPACE/head"
+
+      - name: Detect code changes
+        id: cf
+        shell: bash
+        env:
+          BASE_SHA: ${{ inputs.base-sha }}
+        run: |
+          set -euo pipefail
+          echo "Diffing base vs head trees…"
+
+          changed_files="$(git -C "$GITHUB_WORKSPACE/head" diff --name-only "$BASE_SHA" || true)"
+          echo "Changed files:"
+          echo "$changed_files" || true
+
+          # Expose changed files as output (multiline-safe)
+          {
+            echo "changed_files<<EOF"
+            echo "$changed_files"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          # Filter to code extensions
+          code_files="$(echo "$changed_files" | grep -E '\.(h|hpp|c|cpp)$' || true)"
+
+          if [[ -n "$code_files" ]]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "Matched code files:"
+            echo "$code_files"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "No matching code files found."
+          fi
+
+      - name: Stop early if no code changes
+        if: ${{ steps.cf.outputs.code != 'true' }}
+        shell: bash
+        run: |
+          echo "No *.h/*.hpp/*.c/*.cpp changes detected; skipping ABI check."
+          echo "Source code file changes are not detected. Skipping ABI compatibility checks." >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+      - name: Install yq
+        if: ${{ steps.cf.outputs.code == 'true' }}
+        id: install-yq
+        shell: bash
+        run: |
+          set -e
+
+          # Default output
+          echo "yq-installed=false" >> "$GITHUB_OUTPUT"
+
+          # If yq already present, mark installed and exit
+          if command -v yq >/dev/null 2>&1; then
+            echo "yq already present: $(yq --version || true)"
+            echo "yq-installed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Install prereqs
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+
+          # Determine correct yq asset based on architecture
+          arch="$(uname -m)"
+          case "$arch" in
+            x86_64|amd64)   yq_asset="yq_linux_amd64" ;;
+            aarch64|arm64)  yq_asset="yq_linux_arm64" ;;
+            armv7l|armv7)   yq_asset="yq_linux_arm" ;;
+            *)
+              echo "::warning::Unsupported architecture for yq: $arch. Skipping yq install."
+              exit 0
+              ;;
+          esac
+
+          # Download and install yq
+          sudo wget -qO /usr/local/bin/yq \
+            "https://github.com/mikefarah/yq/releases/download/v4.44.3/${yq_asset}"
+          sudo chmod +x /usr/local/bin/yq
+
+          echo "Installed yq: $(/usr/local/bin/yq --version 2>&1)"
+
+          if ! /usr/local/bin/yq --version >/dev/null 2>&1; then
+            echo "::warning::yq installed but version check failed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          else
+            echo "yq-installed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify build script exists
+        if: ${{ steps.cf.outputs.code == 'true' }}
+        id: verify-build-script
+        shell: bash
+        env:
+          BUILD_SCRIPT: ${{ inputs.build-script }}
+        run: |
+          set -euo pipefail
+          SCRIPT_PATH="$GITHUB_WORKSPACE/head/$BUILD_SCRIPT"
+          echo "Checking for build script: $SCRIPT_PATH"
+
+          if [[ ! -f "$SCRIPT_PATH" ]]; then
+            echo "script_valid=false" >> "$GITHUB_OUTPUT"
+            echo "Build script not found at: $BUILD_SCRIPT. skipping ABI checks."
+            exit 0
+          fi
+
+          chmod +x "$SCRIPT_PATH"
+          echo "script_valid=true" >> "$GITHUB_OUTPUT"
+      
+      - name: Detect abi_checks section
+        if: ${{ steps.install-yq.outputs.yq-installed == 'true' }}
+        id: detect-abi
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONFIG="$GITHUB_WORKSPACE/head/public_headers/config.yml"
+
+          if [[ ! -f "$CONFIG" ]]; then
+            echo "configuration file (public_headers/config.yml) not found. Skipping ABI checks." >> "$GITHUB_STEP_SUMMARY"
+            echo "has-abi-checks=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Passes if .abi_checks has at least one entry where .path is a non-empty string
+          if yq -e '((.abi_checks // []) | map(select((.path // "") != "")) | length) > 0' "$CONFIG" >/dev/null 2>&1; then
+            echo "has-abi-checks=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has-abi-checks=false" >> "$GITHUB_OUTPUT"
+            echo "No valid abi_checks entries with a non-empty 'path' found. Skipping ABI checks." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+      - name: Install abidiff (libabigail)
+        if: ${{ steps.detect-abi.outputs.has-abi-checks == 'true' }}
+        id: install-abi
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo ">>> Installing libabigail (abidiff)"
+          sudo apt-get update -y
+          sudo apt-get install -y abigail-tools
+          echo ">>> abidiff installed successfully"
+          ver="$(abidiff --version 2>&1 || true)"
+          echo "abidiff_installed=true" >> "$GITHUB_OUTPUT"
+          if [[ -z "${ver}" ]]; then
+            echo "ERROR: abidiff produced no version output"
+            echo "abidiff_installed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "${ver}"
+
+      - name: Install binutils
+        if: ${{ steps.detect-abi.outputs.has-abi-checks == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y binutils
+          echo "Installed binutils:"
+          which readelf || echo "readelf missing"
+          which objdump || echo "objdump missing"
+
+      - name: Run build script (Base)
+        env:
+          BASE_DIR: ${{ github.workspace }}/base
+          HEAD_DIR: ${{ github.workspace }}/head
+          BUILD_SCRIPT: ${{ inputs.build-script }}
+          CFLAGS: -g -Og -fno-eliminate-unused-debug-types
+          CXXFLAGS: -g -Og -fno-eliminate-unused-debug-types
+          ABIDIFF_OK: ${{ steps.install-abi.outputs.abidiff_installed }}
+        if: ${{ env.ABIDIFF_OK == 'true' && steps.verify-build-script.outputs.script_valid == 'true' && steps.detect-abi.outputs.has-abi-checks == 'true' }}
+        shell: bash
+        working-directory: base
+        run: |
+          set -euo pipefail
+          echo ">>> pwd: $(pwd)"
+          echo ">>> BASE_DIR=$BASE_DIR"
+          echo ">>> HEAD_DIR=$HEAD_DIR"
+          SCRIPT="$HEAD_DIR/$BUILD_SCRIPT"
+          echo ">>> Expecting build script at: $SCRIPT"
+
+          echo ">>> Running partner build with GITHUB_WORKSPACE=$BASE_DIR"
+          if ! \
+            GITHUB_WORKSPACE="$BASE_DIR" \
+            CFLAGS="${CFLAGS:-}" \
+            CXXFLAGS="${CXXFLAGS:-}" \
+            bash "$SCRIPT"
+          then
+            echo "Base build failed" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Run build script (Head/PR)
+        env:
+          BUILD_SCRIPT: ${{ inputs.build-script }}
+          HEAD_DIR: ${{ github.workspace }}/head
+          CFLAGS:  -g -Og -fno-eliminate-unused-debug-types
+          CXXFLAGS: -g -Og -fno-eliminate-unused-debug-types
+          ABIDIFF_OK: ${{ steps.install-abi.outputs.abidiff_installed }}
+        if: ${{ env.ABIDIFF_OK == 'true' && steps.verify-build-script.outputs.script_valid == 'true' && steps.detect-abi.outputs.has-abi-checks == 'true' }}
+        shell: bash
+        working-directory: head
+        run: |
+          set -euo pipefail
+          echo ">>> pwd: $(pwd)"
+          echo ">>> HEAD_DIR=$HEAD_DIR"
+          SCRIPT="$HEAD_DIR/$BUILD_SCRIPT"
+          echo ">>> Expecting build script at: $SCRIPT"
+
+          echo ">>> Running partner build with GITHUB_WORKSPACE=$HEAD_DIR"
+          if ! \
+            GITHUB_WORKSPACE="$HEAD_DIR" \
+            CFLAGS="${CFLAGS:-}" \
+            CXXFLAGS="${CXXFLAGS:-}" \
+            bash "$SCRIPT"
+          then
+            echo "Head build failed" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Parse ABI config
+        if: ${{ steps.detect-abi.outputs.has-abi-checks == 'true' }}
+        id: abi-parse
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash "${{ github.action_path }}/scripts/parse-abi-config.sh" \
+            --config "$GITHUB_WORKSPACE/head/public_headers/config.yml" \
+            --head-root "$GITHUB_WORKSPACE/head" \
+            --base-root "$GITHUB_WORKSPACE/base" \
+            --out "$GITHUB_WORKSPACE/abi_manifest.tsv"
+
+      - name: Check if ABI manifest has content
+        if: ${{ steps.detect-abi.outputs.has-abi-checks == 'true' }}
+        id: abi-check
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "abi-ready=false" >> "$GITHUB_OUTPUT"
+          FILE="$GITHUB_WORKSPACE/abi_manifest.tsv"
+
+          if [[ ! -s "$FILE" ]]; then
+            echo "abi-ready=false" >> "$GITHUB_OUTPUT"
+            if [[ "${{ steps.detect-abi.outputs.has-abi-checks }}" == "true" ]]; then
+                echo "abi_checks section exists in config.yml but resolved to **0 binaries**. Skipping ABI checks." >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 0
+          fi
+
+          echo "ABI manifest is non-empty."
+          echo "abi-ready=true" >> "$GITHUB_OUTPUT"
+          cat "$FILE"
+
+      - name: Initialize metadata.json
+        if: ${{ steps.abi-check.outputs.abi-ready == 'true' }}
+        id: create-metadata
+        shell: bash
+        env:
+          REPORTS_DIR:  ${{ github.workspace }}/abichecker_reports
+          SERVER_URL:   ${{ github.server_url }}
+          REPO:         ${{ github.repository }}
+          RUN_ID:       ${{ github.run_id }}
+          EVENT_NAME:   ${{ github.event_name }}
+          PR_NUMBER:    ${{ github.event.pull_request.number || 'null' }}
+          BRANCH_NAME:  ${{ inputs.branch-name }}
+          HEAD_SHA:     ${{ inputs.head-sha }}
+          BASE_SHA:     ${{ inputs.base-sha }}
+          CHANGED_FILES: ${{ steps.cf.outputs.changed_files }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$REPORTS_DIR"
+
+          PROJECT_URL="$SERVER_URL/$REPO"
+          WORKFLOW_URL="$SERVER_URL/$REPO/actions/runs/$RUN_ID"
+          ARTIFACTS_URL="$WORKFLOW_URL#artifacts"
+          TIMESTAMP="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          # Convert newline-separated files to JSON array
+          if [[ -n "$CHANGED_FILES" ]]; then
+            CHANGED_FILES_JSON=$(printf '%s\n' "$CHANGED_FILES" | jq -R . | jq -s .)
+          else
+            CHANGED_FILES_JSON="[]"
+          fi
+
+          cat > "$REPORTS_DIR/abi_metadata.json" <<EOF
+          {
+            "project_url": "$PROJECT_URL",
+            "branch": "$BRANCH_NAME",
+            "github_event": "$EVENT_NAME",
+            "pr_number": $PR_NUMBER,
+            "timestamp": "$TIMESTAMP",
+            "head_sha": "$HEAD_SHA",
+            "base_sha": "$BASE_SHA",
+            "artifacts": "$ARTIFACTS_URL",
+            "changed_files": $CHANGED_FILES_JSON,
+            "binaries": []
+          }
+          EOF
+
+          echo "metadata_created_path=$REPORTS_DIR/abi_metadata.json" >> "$GITHUB_OUTPUT"
+          echo "Initialized abi_metadata.json at $REPORTS_DIR/abi_metadata.json"
+
+      - name: Run ABI checks
+        if: ${{ steps.abi-check.outputs.abi-ready == 'true' }}
+        id: run-abi
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest="$GITHUB_WORKSPACE/abi_manifest.tsv"
+          reports_dir="$GITHUB_WORKSPACE/abichecker_reports"
+          bash "${{ github.action_path }}/scripts/run_abi_checks.sh" "$manifest" "$reports_dir"
+      
+      - name: Upload abidiff reports
+        if: ${{ steps.run-abi.outputs.abi_result != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: abichecker-reports
+          path: ${{ github.workspace }}/abichecker_reports
+
+      - name: Upload metadata to S3
+        if: ${{ steps.run-abi.outputs.abi_result != '' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FOLDER="$GITHUB_WORKSPACE/abichecker_reports"
+          META="$FOLDER/abi_metadata.json"
+          MANIFEST="$GITHUB_WORKSPACE/abi_manifest.tsv"
+
+          s3_ok="false"
+
+          # Preconditions relaxed: warn instead of exit 1
+          if [[ ! -s "$META" ]]; then
+            echo "::warning :: abi_metadata.json not found or empty; skipping S3 upload"
+            echo "s3_upload=$s3_ok" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! jq -e . "$META" >/dev/null 2>&1; then
+            echo "::warning :: abi_metadata.json is not valid JSON; skipping S3 upload"
+            echo "s3_upload=$s3_ok" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ -s "$MANIFEST" ]]; then
+            if ! jq -e '.binaries | length > 0' "$META" >/dev/null 2>&1; then
+              echo "::warning :: abi_metadata.json: binaries empty but manifest had entries; skipping S3 upload"
+              echo "s3_upload=$s3_ok" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          BUCKET="s3://qli-prd-armor-gh-artifacts"
+          YYYY="$(date -u +'%Y')"; MM="$(date -u +'%m')"; DD="$(date -u +'%d')"; HH="$(date -u +'%H')"
+          HOST="$(printf '%s' "${{ github.server_url }}" | sed -E 's#^[a-zA-Z]+://##; s#/.*$##')"
+          PREFIX="${YYYY}/${MM}/${DD}/${HH}/${HOST}/${{ github.repository }}/${GITHUB_REF_NAME}/${{ github.run_id }}/files"
+
+          echo "Uploading artifacts to Destination: ${BUCKET}/${PREFIX}"
+
+          max_tries=3
+          tries=0
+          rc=1
+          last_err=""
+
+          while [[ $tries -lt $max_tries && $rc -ne 0 ]]; do
+            tries=$((tries+1))
+            set +e
+            ERR_FILE="$(mktemp)"
+            aws s3 cp "${META}" "${BUCKET}/${PREFIX}/abi_metadata.json" \
+              --content-type "application/json" \
+              --only-show-errors \
+              2> "${ERR_FILE}"
+            rc=$?
+            set -e
+
+            if [[ $rc -ne 0 ]]; then
+              last_err="$(cat "${ERR_FILE}" || true)"
+              rm -f "${ERR_FILE}"
+
+              # Sleep only if more attempts remain
+              if [[ $tries -lt $max_tries ]]; then
+                echo "Retrying in 3s..."
+                sleep 5
+              fi
+            else
+              # Success
+              rm -f "${ERR_FILE}"
+            fi
+          done
+
+          if [[ $rc -eq 0 ]]; then
+            echo "S3 upload succeeded."
+            s3_ok="true"
+          else
+            echo "::warning :: S3 upload FAILED after ${max_tries} attempts"
+            echo "::warning :: Reason: ${last_err:-No error output captured}"
+          fi
+
+          echo "s3_upload=$s3_ok" >> "$GITHUB_OUTPUT"
+
+      - name: ABI check result
+        if: ${{ steps.run-abi.outputs.abi_result != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="${{ steps.run-abi.outputs.abi_result }}"
+          ok="${{ steps.run-abi.outputs.abi_ok || 0 }}"
+          changed="${{ steps.run-abi.outputs.abi_changed || 0 }}"
+          incompatible="${{ steps.run-abi.outputs.abi_incompatible || 0 }}"
+          errors="${{ steps.run-abi.outputs.abi_errors || 0 }}"
+
+          if [[ "$status" == "fail" ]]; then
+            echo "ABI check FAILED (compatible=${ok}, ABI changed=${changed}, incompatible=${incompatible}, errors=${errors})"
+            exit 1
+          else
+            echo "ABI check PASSED (compatible=${ok}, ABI changed=${changed}, incompatible=${incompatible}, errors=${errors})"
+          fi
